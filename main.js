@@ -296,7 +296,7 @@ async function check_and_process_wallet(wallet, token, is_initial = false) {
             return;
         }
     } else if (wallet_log && wallet_log.nextTimestamp && wallet_log.nextTimestamp > now) {
-        return; // Chưa đến thời điểm, bỏ qua
+        return;
     }
 
     try {
@@ -344,7 +344,7 @@ async function run() {
                 await check_and_process_wallet(wallet, token);
             }
         }
-    }, 10800000); // 3 giờ = 10,800,000 ms
+    }, 10800000);
 }
 
 run();
