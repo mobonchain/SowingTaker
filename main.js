@@ -39,7 +39,7 @@ const proxies = fs.existsSync('proxy.txt')
         .filter(line => line && !line.startsWith('#'))
     : [];
 if (proxies.length === 0) {
-    log('Không tìm thấy proxy trong proxy.txt. Chạy không dùng proxy.', 'warning');
+    console.warn('Không tìm thấy proxy trong proxy.txt. Chạy không dùng proxy.'.yellow);
 }
 
 const wallets = fs.existsSync('wallet.txt')
@@ -56,7 +56,7 @@ const wallets = fs.existsSync('wallet.txt')
                     proxy: proxies[i] || null,
                 };
             } catch (error) {
-                log(`Private key ${i + 1} không hợp lệ: ${error.message}`, 'error');
+                console.error(`Private key ${i + 1} không hợp lệ: ${error.message}`.red);
                 return null;
             }
         })
@@ -67,7 +67,7 @@ if (wallets.length === 0) {
 }
 
 if (proxies.length < wallets.length) {
-    log(`Cảnh báo: Chỉ có ${proxies.length} proxy cho ${wallets.length} ví. Một số ví sẽ không dùng proxy.`, 'warning');
+    console.warn(`Cảnh báo: Chỉ có ${proxies.length} proxy cho ${wallets.length} ví. Một số ví sẽ không dùng proxy.`.yellow);
 }
 
 const tokens = {};
@@ -85,7 +85,7 @@ function log(message, type = 'info') {
             colored = `${message}`.yellow;
             break;
         default:
-            colored = `${message}`.white;
+            colored = `${message}`.cyan.bold;
     }
     console.log(colored);
 }
@@ -101,36 +101,7 @@ function normalize_proxy(proxy) {
 function get_proxy_host(proxy) {
     if (!proxy) return 'Không có';
     const url = new URL(normalize_proxy(proxy));
-    const port = url.port || '80';
-    return `${url.hostname}:${port}`.yellow;
-}
-
-function read_log_json() {
-    try {
-        if (fs.existsSync('log.json')) {
-            return JSON.parse(fs.readFileSync('log.json', 'utf-8'));
-        }
-        return {};
-    } catch (error) {
-        return {};
-    }
-}
-
-function write_log_json(data) {
-    try {
-        fs.writeFileSync('log.json', JSON.stringify(data, null, 2));
-    } catch (error) {
-        log(`Lỗi ghi log.json: ${error.message}`, 'error');
-    }
-}
-
-function format_time(timestamp) {
-    const time_left = timestamp - Date.now();
-    if (time_left <= 0) return 'Đủ điều kiện';
-    const hours = Math.floor(time_left / (1000 * 60 * 60));
-    const minutes = Math.floor((time_left % (1000 * 60 * 60)) / (1000 * 60));
-    const seconds = Math.floor((time_left % (1000 * 60)) / 1000);
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    return `${url.hostname}:${url.port}`.yellow;
 }
 
 async function api_request(url, method = 'GET', data = null, token = null, proxy = null) {
@@ -215,22 +186,17 @@ async function login(wallet, nonce) {
 
 async function get_user_info(wallet, token) {
     const response = await api_request(`${api}/user/info`, 'GET', null, token, wallet.proxy);
-    if (response.code === 200) {
-        const log_data = read_log_json();
-        log_data[wallet.address] = { nextTimestamp: response.result.nextTimestamp || null };
-        write_log_json(log_data);
-        return response.result;
-    }
+    if (response.code === 200) return response.result;
     throw new Error('Không lấy được thông tin user: ' + response.message);
 }
 
 async function sign_in(wallet, token) {
     const response = await api_request(`${api}/task/signIn?status=true`, 'GET', null, token, wallet.proxy);
     if (response.code === 200) {
-        log('Bắt đầu farming thành công', 'success');
+        log('Đăng nhập thành công! Bắt đầu farming.', 'success');
         return true;
     }
-    log('Bắt đầu farming thất bại: ' + response.message, 'error');
+    log('Đăng nhập thất bại: ' + response.message, 'error');
     return false;
 }
 
@@ -262,10 +228,10 @@ async function claim_reward(wallet, token) {
             log(`Start Farming thất bại: ${sign_in_response.message}`, 'warning');
         }
 
-        log('Nhận thưởng thành công', 'success');
+        log('Nhận thưởng thành công!', 'success');
         return true;
     } catch (error) {
-        log(`Lỗi nhận thưởng: ${error.message}`, 'error');
+        log(`Lỗi khi nhận thưởng: ${error.message}`, 'error');
         return false;
     }
 }
@@ -283,39 +249,37 @@ async function farm_cycle(wallet, token) {
     }
 }
 
-async function check_and_process_wallet(wallet, token, is_initial = false) {
-    const log_data = read_log_json();
-    const wallet_log = log_data[wallet.address];
-    const now = Date.now();
-
-    if (is_initial) {
-        if (!wallet_log || !wallet_log.nextTimestamp || wallet_log.nextTimestamp <= now) {
-            log('Ví sẵn sàng farming', 'info');
-        } else {
-            log(`Ví đang chờ: ${format_time(wallet_log.nextTimestamp)}`, 'info');
-            return;
-        }
-    } else if (wallet_log && wallet_log.nextTimestamp && wallet_log.nextTimestamp > now) {
-        return;
-    }
-
-    try {
-        const user_info = await get_user_info(wallet, token);
-        if (user_info.nextTimestamp && user_info.nextTimestamp <= now) {
-            log('Chu kỳ farming hoàn tất. Nhận thưởng...', 'info');
-            await farm_cycle(wallet, token);
-        } else if (!user_info.nextTimestamp) {
-            log('Bắt đầu farming...', 'info');
-            await sign_in(wallet, token);
-        }
-    } catch (error) {
-        log(`Lỗi kiểm tra farming: ${error.message}`, 'error');
-    }
+function format_time(timestamp) {
+    const time_left = timestamp - Date.now();
+    if (time_left <= 0) return '00:00:00';
+    const hours = Math.floor(time_left / (1000 * 60 * 60));
+    const minutes = Math.floor((time_left % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((time_left % (1000 * 60)) / 1000);
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 }
 
-async function run() {
-    log(`Khởi động Taker Farming Bot cho ${wallets.length} ví`, 'success');
+function start_countdown(wallet, token, next_timestamp) {
+    if (wallet.countdown_interval) clearInterval(wallet.countdown_interval);
 
+    const update = async () => {
+        const time_left = next_timestamp - Date.now();
+        if (time_left <= 0) {
+            log('Chu kỳ farming hoàn tất!', 'success');
+            clearInterval(wallet.countdown_interval);
+            wallet.countdown_interval = null;
+            await farm_cycle(wallet, token);
+            return;
+        }
+        log(`Thời gian còn lại: ${format_time(next_timestamp)}`, 'info');
+    };
+
+    update();
+    wallet.countdown_interval = setInterval(update, 60000);
+}
+
+async function process_wallets() {
+    log(`Khởi động Taker Farming Bot cho ${wallets.length} ví`, 'success');
+    
     for (let i = 0; i < wallets.length; i++) {
         const wallet = wallets[i];
         log(`Xử lý ví ${i + 1}/${wallets.length}`, 'info');
@@ -324,27 +288,42 @@ async function run() {
             const nonce = await get_nonce(wallet);
             const token = await login(wallet, nonce);
             tokens[wallet.address] = token;
-            log('Đăng nhập thành công', 'success');
-            await check_and_process_wallet(wallet, token, true);
+            log('Đăng nhập thành công!', 'success');
+
+            const user_info = await get_user_info(wallet, token);
+            log(`Điểm Taker: ${user_info.takerPoints} | Lượt đăng nhập liên tiếp: ${user_info.consecutiveSignInCount} | Số thưởng: ${user_info.rewardCount}`, 'info');
+
+            if (user_info.nextTimestamp && user_info.nextTimestamp <= Date.now()) {
+                log('Chu kỳ farming hoàn tất. Nhận thưởng...', 'info');
+                await farm_cycle(wallet, token);
+            } else if (user_info.nextTimestamp && user_info.nextTimestamp > Date.now()) {
+                log(`Đang farming. Nhận thưởng sau: ${format_time(user_info.nextTimestamp)}`, 'info');
+                start_countdown(wallet, token, user_info.nextTimestamp);
+            } else {
+                log('Không có farming hoạt động. Bắt đầu farming...', 'info');
+                const sign_in_success = await sign_in(wallet, token);
+                if (sign_in_success) {
+                    const updated_info = await get_user_info(wallet, token);
+                    if (updated_info.nextTimestamp) start_countdown(wallet, token, updated_info.nextTimestamp);
+                }
+            }
         } catch (error) {
             log(`Lỗi: ${error.message}`, 'error');
         }
     }
+}
 
-    if (Object.keys(tokens).length === 0) {
-        log('Không có ví nào đăng nhập được. Thoát...', 'error');
-        return;
-    }
+async function wait_and_restart() {
+    log('Chế độ chờ 3 giờ...', 'info');
+    setTimeout(async () => {
+        await process_wallets();
+        await wait_and_restart();
+    }, 3 * 60 * 60 * 1000); // 3 giờ
+}
 
-    setInterval(async () => {
-        for (let i = 0; i < wallets.length; i++) {
-            const wallet = wallets[i];
-            const token = tokens[wallet.address];
-            if (token) {
-                await check_and_process_wallet(wallet, token);
-            }
-        }
-    }, 10800000);
+async function run() {
+    await process_wallets();
+    await wait_and_restart();
 }
 
 run();
