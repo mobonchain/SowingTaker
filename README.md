@@ -17,6 +17,11 @@
 
 ---
 
+## Cập Nhật 
+
+- **Hỗ trợ giải Captcha với :** **[2captcha](https://2captcha.com)**, **[Capsolver](https://dashboard.capsolver.com/passport/register?inviteCode=YNkX1MhRMGqQ)**, **[Anti-Captcha](https://anti-captcha.com/)**
+- Khuyến khích sử dụng loại 1 hoặc 2
+
 ## Cấu Trúc File Dữ Liệu
 
 1. **proxy.txt**:
@@ -33,6 +38,14 @@
      0xYourPrivateKey1
      0xYourPrivateKey2
      ```
+2. **.env**:
+- Thay null bằng **API** của **Website** mà bạn sử dụng
+- Định dạng ban đầu:
+```
+TWOCAPTCHA_API=null
+CAPSOLVER=null
+ANTICAPTCHA=null
+```
 
 ---
 
@@ -47,7 +60,7 @@
 
 1. Mở file `proxy.txt` và nhâp vào danh sách `Proxy` theo cấu trúc dữ liệu phía trên
 2. Mở file `wallet.txt` và nhập vào `Private Key` của các ví EVM mà bạn đã đăng ký **Sowing Taker**
-
+3. Mở file `.env` và thay **API** của **Website** vào `null`
 ### Bước 3: Cài Đặt Module
 
 1. Mở **Command Prompt (CMD)** hoặc **PowerShell** trong thư mục chứa mã nguồn.
