@@ -3,6 +3,10 @@ const axios = require('axios');
 const ethers = require('ethers');
 const fs = require('fs');
 const { HttpsProxyAgent } = require('https-proxy-agent');
+const dotenv = require('dotenv');
+const readline = require('readline');
+
+dotenv.config();
 
 const api = 'https://sowing-api.taker.xyz';
 const contract = '0xF929AB815E8BfB84Cdab8d1bb53F22eB1e455378';
@@ -17,6 +21,22 @@ const abi = [
         "type": "function"
     }
 ];
+
+const SITE_KEY = '0x4AAAAAABNqF8H4KF9TDs2O';
+const PAGE_URL = 'https://sowing.taker.xyz/';
+
+const CAPTCHA_SERVICES = [
+    { name: '2Captcha', key: process.env.TWOCAPTCHA_API, apiUrl: 'http://2captcha.com', method: 'turnstile' },
+    { name: 'CapSolver', key: process.env.CAPSOLVER, apiUrl: 'https://api.capsolver.com', method: 'cf' },
+    { name: 'Anti-Captcha', key: process.env.ANTICAPTCHA, apiUrl: 'https://api.anti-captcha.com', method: 'AntiTurnstileTaskProxyLess' },
+];
+
+const availableCaptchaServices = CAPTCHA_SERVICES.filter(service => service.key && service.key !== 'null');
+
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
 
 const headers = {
     'accept': 'application/json, text/plain, */*',
@@ -104,8 +124,12 @@ function get_proxy_host(proxy) {
     return `${url.hostname}:${url.port}`.yellow;
 }
 
-async function api_request(url, method = 'GET', data = null, token = null, proxy = null) {
-    const config = { method, url, headers: { ...headers } };
+async function api_request(url, method = 'GET', data = null, token = null, proxy = null, customHeaders = {}) {
+    const config = { 
+        method, 
+        url, 
+        headers: { ...headers, ...customHeaders } 
+    };
     if (data) config.data = data;
     if (token) config.headers['authorization'] = `Bearer ${token}`;
     if (proxy) config.httpsAgent = new HttpsProxyAgent(normalize_proxy(proxy));
@@ -114,6 +138,184 @@ async function api_request(url, method = 'GET', data = null, token = null, proxy
         return response.data;
     } catch (error) {
         throw new Error(error.response?.data?.message || error.message);
+    }
+}
+
+async function selectCaptchaService() {
+    if (availableCaptchaServices.length === 0) {
+        throw new Error('Không có dịch vụ CAPTCHA nào được cấu hình trong .env');
+    }
+    if (availableCaptchaServices.length === 1) {
+        log(`Sử dụng dịch vụ CAPTCHA: ${availableCaptchaServices[0].name}`, 'info');
+        return availableCaptchaServices[0];
+    }
+
+    log('Có nhiều dịch vụ CAPTCHA được cấu hình. Vui lòng chọn:', 'info');
+    availableCaptchaServices.forEach((service, index) => {
+        log(`${index + 1}. ${service.name}`, 'info');
+    });
+
+    return new Promise((resolve, reject) => {
+        rl.question('Nhập số tương ứng với dịch vụ CAPTCHA bạn muốn sử dụng: ', (answer) => {
+            const index = parseInt(answer) - 1;
+            if (index >= 0 && index < availableCaptchaServices.length) {
+                log(`Đã chọn dịch vụ: ${availableCaptchaServices[index].name}`, 'success');
+                resolve(availableCaptchaServices[index]);
+            } else {
+                reject(new Error('Lựa chọn không hợp lệ'));
+            }
+        });
+    });
+}
+
+async function get_captcha_token(wallet, captchaService) {
+    try {
+        log(`Đang giải CAPTCHA với ${captchaService.name}...`, 'info');
+
+        if (!captchaService.key) {
+            throw new Error(`API key ${captchaService.name} không được cấu hình`);
+        }
+
+        let taskId, token;
+
+        if (captchaService.name === '2Captcha') {
+            const taskData = {
+                key: captchaService.key,
+                method: captchaService.method,
+                sitekey: SITE_KEY,
+                pageurl: PAGE_URL,
+                json: 1
+            };
+            const createResponse = await axios.post(`${captchaService.apiUrl}/in.php`, taskData);
+            const createResult = createResponse.data;
+
+            if (createResult.status !== 1) {
+                throw new Error(`Tạo nhiệm vụ CAPTCHA thất bại: ${createResult.request}`);
+            }
+
+            taskId = createResult.request;
+            log(`Nhiệm vụ CAPTCHA được tạo: TaskID=${taskId}`, 'success');
+
+            let attempts = 0;
+            const maxAttempts = 30;
+            const pollInterval = 6000;
+
+            while (attempts < maxAttempts) {
+                attempts++;
+                log(`Đang kiểm tra kết quả CAPTCHA (lần ${attempts}/${maxAttempts})...`, 'info');
+                const resultResponse = await axios.get(`${captchaService.apiUrl}/res.php?key=${captchaService.key}&action=get&id=${taskId}&json=1`);
+                const result = resultResponse.data;
+
+                if (result.status === 1) {
+                    token = result.request;
+                    log(`Lấy CaptchaToken thành công: ${token}`, 'success');
+                    return token;
+                }
+                if (result.request === 'CAPCHA_NOT_READY') {
+                    await new Promise(resolve => setTimeout(resolve, pollInterval));
+                    continue;
+                }
+                throw new Error(`Lấy kết quả CAPTCHA thất bại: ${result.request}`);
+            }
+            throw new Error('Hết thời gian chờ kết quả CAPTCHA');
+        }
+
+        if (captchaService.name === 'CapSolver') {
+            const taskData = {
+                clientKey: captchaService.key,
+                task: {
+                    type: 'AntiTurnstileTaskProxyLess',
+                    websiteURL: PAGE_URL,
+                    websiteKey: SITE_KEY
+                }
+            };
+            const createResponse = await axios.post(`${captchaService.apiUrl}/createTask`, taskData);
+            const createResult = createResponse.data;
+
+            if (createResult.errorId !== 0) {
+                throw new Error(`Tạo nhiệm vụ CAPTCHA thất bại: ${createResult.errorDescription}`);
+            }
+
+            taskId = createResult.taskId;
+            log(`Nhiệm vụ CAPTCHA được tạo: TaskID=${taskId}`, 'success');
+
+            let attempts = 0;
+            const maxAttempts = 30;
+            const pollInterval = 5000;
+
+            while (attempts < maxAttempts) {
+                attempts++;
+                log(`Đang kiểm tra kết quả CAPTCHA (lần ${attempts}/${maxAttempts})...`, 'info');
+                const resultResponse = await axios.post(`${captchaService.apiUrl}/getTaskResult`, {
+                    clientKey: captchaService.key,
+                    taskId
+                });
+                const result = resultResponse.data;
+
+                if (result.status === 'ready') {
+                    token = result.solution.token;
+                    log(`Lấy CaptchaToken thành công: ${token}`, 'success');
+                    return token;
+                }
+                if (result.status === 'processing') {
+                    await new Promise(resolve => setTimeout(resolve, pollInterval));
+                    continue;
+                }
+                throw new Error(`Lấy kết quả CAPTCHA thất bại: ${result.errorDescription || 'Unknown error'}`);
+            }
+            throw new Error('Hết thời gian chờ kết quả CAPTCHA');
+        }
+
+        if (captchaService.name === 'Anti-Captcha') {
+            const taskData = {
+                clientKey: captchaService.key,
+                task: {
+                    type: captchaService.method,
+                    websiteURL: PAGE_URL,
+                    websiteKey: SITE_KEY
+                }
+            };
+            const createResponse = await axios.post(`${captchaService.apiUrl}/createTask`, taskData);
+            const createResult = createResponse.data;
+
+            if (createResult.errorId !== 0) {
+                throw new Error(`Tạo nhiệm vụ CAPTCHA thất bại: ${createResult.errorDescription}`);
+            }
+
+            taskId = createResult.taskId;
+            log(`Nhiệm vụ CAPTCHA được tạo: TaskID=${taskId}`, 'success');
+
+            let attempts = 0;
+            const maxAttempts = 30;
+            const pollInterval = 5000;
+
+            while (attempts < maxAttempts) {
+                attempts++;
+                log(`Đang kiểm tra kết quả CAPTCHA (lần ${attempts}/${maxAttempts})...`, 'info');
+                const resultResponse = await axios.post(`${captchaService.apiUrl}/getTaskResult`, {
+                    clientKey: captchaService.key,
+                    taskId
+                });
+                const result = resultResponse.data;
+
+                if (result.status === 'ready') {
+                    token = result.solution.token;
+                    log(`Lấy CaptchaToken thành công: ${token}`, 'success');
+                    return token;
+                }
+                if (result.status === 'processing') {
+                    await new Promise(resolve => setTimeout(resolve, pollInterval));
+                    continue;
+                }
+                throw new Error(`Lấy kết quả CAPTCHA thất bại: ${result.errorDescription || 'Unknown error'}`);
+            }
+            throw new Error('Hết thời gian chờ kết quả CAPTCHA');
+        }
+
+        throw new Error(`Dịch vụ CAPTCHA ${captchaService.name} không được hỗ trợ`);
+    } catch (error) {
+        log(`Lỗi khi giải CAPTCHA: ${error.message}`, 'error');
+        throw new Error(`Giải CAPTCHA thất bại: ${error.message}`);
     }
 }
 
@@ -200,8 +402,13 @@ async function sign_in(wallet, token) {
     return false;
 }
 
-async function claim_reward(wallet, token) {
+async function claim_reward(wallet, token, captchaService) {
     try {
+        log('Bắt đầu nhận thưởng...', 'info');
+        log('Đang giải CAPTCHA trước khi gọi hợp đồng...', 'info');
+        const captchaToken = await get_captcha_token(wallet, captchaService);
+
+        log('Đang kết nối blockchain...', 'info');
         const provider = new ethers.JsonRpcProvider('https://rpc-mainnet.taker.xyz', {
             chainId: 1125,
             name: 'Taker',
@@ -210,6 +417,7 @@ async function claim_reward(wallet, token) {
         const ethers_wallet = new ethers.Wallet(wallet.privateKey, provider);
         const contract_instance = new ethers.Contract(contract, abi, ethers_wallet);
 
+        log('Đang gửi giao dịch blockchain...', 'info');
         const tx = await contract_instance.active({
             gasLimit: 182832,
             maxPriorityFeePerGas: ethers.parseUnits('0.11', 'gwei'),
@@ -221,7 +429,16 @@ async function claim_reward(wallet, token) {
         const receipt = await tx.wait();
         log(`Giao dịch xác nhận: ${receipt.hash}`, 'success');
 
-        const sign_in_response = await api_request(`${api}/task/signIn?status=false`, 'GET', null, token, wallet.proxy);
+        log('Đang gọi API signIn với CaptchaToken...', 'info');
+        const sign_in_response = await api_request(
+            `${api}/task/signIn?status=false`,
+            'GET',
+            null,
+            token,
+            wallet.proxy,
+            { 'cf-turnstile-token': captchaToken }
+        );
+
         if (sign_in_response.code === 200) {
             log('Start Farming thành công', 'success');
         } else {
@@ -236,9 +453,9 @@ async function claim_reward(wallet, token) {
     }
 }
 
-async function farm_cycle(wallet, token) {
+async function farm_cycle(wallet, token, captchaService) {
     try {
-        const claim_success = await claim_reward(wallet, token);
+        const claim_success = await claim_reward(wallet, token, captchaService);
         if (!claim_success) {
             return false;
         }
@@ -258,7 +475,7 @@ function format_time(timestamp) {
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 }
 
-function start_countdown(wallet, token, next_timestamp) {
+function start_countdown(wallet, token, next_timestamp, captchaService) {
     if (wallet.countdown_interval) clearInterval(wallet.countdown_interval);
 
     const update = async () => {
@@ -267,7 +484,7 @@ function start_countdown(wallet, token, next_timestamp) {
             log('Chu kỳ farming hoàn tất!', 'success');
             clearInterval(wallet.countdown_interval);
             wallet.countdown_interval = null;
-            await farm_cycle(wallet, token);
+            await farm_cycle(wallet, token, captchaService);
             return;
         }
         log(`Thời gian còn lại: ${format_time(next_timestamp)}`, 'info');
@@ -277,7 +494,7 @@ function start_countdown(wallet, token, next_timestamp) {
     wallet.countdown_interval = setInterval(update, 60000);
 }
 
-async function process_wallets() {
+async function process_wallets(captchaService) {
     log(`Khởi động Taker Farming Bot cho ${wallets.length} ví`, 'success');
     
     for (let i = 0; i < wallets.length; i++) {
@@ -295,16 +512,16 @@ async function process_wallets() {
 
             if (user_info.nextTimestamp && user_info.nextTimestamp <= Date.now()) {
                 log('Chu kỳ farming hoàn tất. Nhận thưởng...', 'info');
-                await farm_cycle(wallet, token);
+                await farm_cycle(wallet, token, captchaService);
             } else if (user_info.nextTimestamp && user_info.nextTimestamp > Date.now()) {
                 log(`Đang farming. Nhận thưởng sau: ${format_time(user_info.nextTimestamp)}`, 'info');
-                start_countdown(wallet, token, user_info.nextTimestamp);
+                start_countdown(wallet, token, user_info.nextTimestamp, captchaService);
             } else {
                 log('Không có farming hoạt động. Bắt đầu farming...', 'info');
                 const sign_in_success = await sign_in(wallet, token);
                 if (sign_in_success) {
                     const updated_info = await get_user_info(wallet, token);
-                    if (updated_info.nextTimestamp) start_countdown(wallet, token, updated_info.nextTimestamp);
+                    if (updated_info.nextTimestamp) start_countdown(wallet, token, updated_info.nextTimestamp, captchaService);
                 }
             }
         } catch (error) {
@@ -313,17 +530,20 @@ async function process_wallets() {
     }
 }
 
-async function wait_and_restart() {
-    log('Chế độ chờ 3 giờ...', 'info');
-    setTimeout(async () => {
-        await process_wallets();
-        await wait_and_restart();
-    }, 3 * 60 * 60 * 1000); // 3 giờ
-}
-
 async function run() {
-    await process_wallets();
-    await wait_and_restart();
+    try {
+        const captchaService = await selectCaptchaService();
+        await process_wallets(captchaService);
+        log('Bắt đầu chế độ chờ và lặp lại sau 3 giờ...', 'info');
+        setInterval(async () => {
+            log('Bắt đầu chu kỳ mới...', 'success');
+            await process_wallets(captchaService);
+        }, 3 * 60 * 60 * 1000); // 3 giờ
+    } catch (error) {
+        log(`Lỗi khởi động bot: ${error.message}`, 'error');
+        rl.close();
+        process.exit(1);
+    }
 }
 
 run();
